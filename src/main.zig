@@ -186,9 +186,9 @@ const Game = struct {
                         } else tile.clicking = .nope;
                     }
 
-                    if (left_clicked) {
+                    if (left_clicked and !tile.flag) {
                         // std.debug.print("clicked ({d}, {d}), type = {s}, clicked_count = {d}\n", .{ tile.idx_pos.x, tile.idx_pos.y, @tagName(tile.typ), self.clicked_count });
-                        if (tile.typ == .bomb and !tile.flag) {
+                        if (tile.typ == .bomb) {
                             tile.explode();
                             self.dead = true;
                         } else if (tile.typ == .clicked and !tile.clicked) {
@@ -395,7 +395,7 @@ pub fn main() anyerror!void {
     TILES = try rl.loadTexture("assets/tiles.png");
     defer rl.unloadTexture(TILES);
 
-    rl.setTargetFPS(60); // Set our game to run at 60 frames-per-second
+    rl.setTargetFPS(60); // game to run at 60 frames-per-second
     //--------------------------------------------------------------------------------------
 
     // Main game loop
@@ -419,6 +419,8 @@ pub fn main() anyerror!void {
             screenWidth = @intCast(game.board_width * SPRITE_SZ);
             screenHeight = @intCast(game.board_height * SPRITE_SZ);
             rl.setWindowSize(screenWidth, screenHeight);
+        } else if (rl.isKeyPressed(rl.KeyboardKey.r)) {
+            try game.new_game(game.mode);
         }
 
         // Draw
