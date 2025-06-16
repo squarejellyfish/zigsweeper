@@ -76,6 +76,35 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("raylib", raylib);
     exe.root_module.addImport("raygui", raygui);
 
+    const zgui = b.dependency("zgui", .{
+        .shared = false,
+        .with_implot = false,
+        .backend = .no_backend,
+    });
+    exe.root_module.addImport("zgui", zgui.module("root"));
+    exe.linkLibrary(zgui.artifact("imgui"));
+    exe.addIncludePath(zgui.path("libs/imgui"));
+    const rlimgui = b.dependency("rlimgui", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addCSourceFile(.{
+        .file = rlimgui.path("rlImGui.cpp"),
+        .flags = &.{
+            "-fno-sanitize=undefined",
+            "-std=c++11",
+            "-Wno-deprecated-declarations",
+            "-DNO_FONT_AWESOME",
+        },
+    });
+    exe.addIncludePath(rlimgui.path("."));
+
+    // exe.addIncludePath(b.path("include/"));
+    // exe.addLibraryPath(b.path("include/"));
+    // exe.linkLibC();
+    // exe.linkSystemLibrary("c++");
+    // exe.linkSystemLibrary("rayimgui");
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
