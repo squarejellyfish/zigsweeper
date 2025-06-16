@@ -9,19 +9,31 @@ const c = @cImport({
 });
 const z = @import("zgui");
 
-const SPRITE_SZ = 64;
 const SPRITE_ROW = 4;
+var SPRITE_SZ: usize = 64;
 var screenWidth: i32 = 800;
 var screenHeight: i32 = 600;
 var widgetPortion: f32 = 0.2;
 const widgetPadding: i32 = 320;
-var scale: f32 = 1.0;
+var scale: f32 = 0.75;
 var UNCLICKED: rl.Rectangle = undefined;
 var FLAG: rl.Rectangle = undefined;
 var CLICKED: rl.Rectangle = undefined;
+var CLICKING: rl.Rectangle = undefined;
+const defaultSpritePath = "assets/minesweeper-sprite-dark-256.png";
 
 var TILES: rl.Texture = undefined;
 // var board: [][]Tile = undefined;
+
+// UI shits
+var showDebug: bool = true;
+var showCustom: bool = false;
+var showThemes: bool = false;
+var theme: Theme = .rtx;
+var customWidth: i32 = 8;
+var customHeight: i32 = 8;
+var customMines: i32 = 10;
+var font: z.Font = undefined;
 
 const TileType = enum {
     bomb,
@@ -43,7 +55,15 @@ const TileType = enum {
     }
 };
 
+const Theme = enum { rtx, light, dark, green, purple, poop, pacman };
+
 const Mode = enum { beginner, intermediate, expert, custom };
+
+const CustomGame = struct {
+    width: usize = 8,
+    height: usize = 8,
+    mines: usize = 10,
+};
 
 const ClickingType = enum { mouse, neighbor, nope };
 
@@ -64,15 +84,12 @@ const Game = struct {
     // set the fields, allocates the board
     pub fn init(mode: Mode, allocator: std.mem.Allocator) anyerror!*Game {
         const game = try allocator.create(Game);
-        game.setup(mode, allocator);
-        UNCLICKED = rl.Rectangle.init(0, 64, SPRITE_SZ, SPRITE_SZ);
-        FLAG = rl.Rectangle.init(2 * SPRITE_SZ, 0, SPRITE_SZ, SPRITE_SZ);
-        CLICKED = rl.Rectangle.init(1 * SPRITE_SZ, 1 * SPRITE_SZ, SPRITE_SZ, SPRITE_SZ);
+        game.setup(mode, .{}, allocator);
         try game.alloc_board();
         return game;
     }
 
-    pub fn setup(self: *Game, mode: Mode, allocator: std.mem.Allocator) void {
+    pub fn setup(self: *Game, mode: Mode, args: CustomGame, allocator: std.mem.Allocator) void {
         self.mode = mode;
         self.allocator = allocator;
         self.dead = false;
@@ -91,8 +108,10 @@ const Game = struct {
             self.board_width = 30;
             self.board_height = 16;
             self.mines = 99;
-        } else {
-            @panic("Custom mode is not implemented yet.");
+        } else if (mode == .custom) {
+            self.board_width = args.width;
+            self.board_height = args.height;
+            self.mines = @min(args.mines, self.board_height * self.board_width);
         }
     }
 
@@ -110,9 +129,9 @@ const Game = struct {
         self.allocator.free(self.board);
     }
 
-    pub fn new_game(self: *Game, mode: Mode) anyerror!void {
+    pub fn new_game(self: *Game, mode: Mode, args: CustomGame) anyerror!void {
         self.deinit();
-        self.setup(mode, self.allocator);
+        self.setup(mode, args, self.allocator);
         try self.alloc_board();
         self.clicked_count = 0;
         for (self.board, 0..) |_, i| {
@@ -131,7 +150,14 @@ const Game = struct {
                 };
             }
         }
+        try self.generate_mines();
 
+        self.generate_numbers();
+        screenWidth = @intCast(self.board_width * SPRITE_SZ);
+        screenHeight = @intCast(self.board_height * SPRITE_SZ);
+    }
+
+    pub fn generate_mines(self: *Game) anyerror!void {
         var prng = std.Random.DefaultPrng.init(blk: {
             var seed: u64 = undefined;
             try std.posix.getrandom(std.mem.asBytes(&seed));
@@ -147,7 +173,9 @@ const Game = struct {
             }
             self.board[x][y].typ = .bomb;
         }
+    }
 
+    pub fn generate_numbers(self: *Game) void {
         for (self.board) |row| {
             for (row) |*tile| {
                 if (tile.typ == .bomb) continue;
@@ -159,19 +187,36 @@ const Game = struct {
         }
     }
 
+    fn move_mine(self: *Game, mine: *Tile) void {
+        // moves the mine to the first available slot
+        // this is for saving the player when the first click is a mine
+        for (self.board) |row| {
+            for (row) |*tile| {
+                if (tile.typ != .bomb and mine != tile) {
+                    const tmp = tile.typ;
+                    tile.typ = mine.typ;
+                    mine.typ = tmp;
+                    return;
+                }
+            }
+        }
+    }
+
     pub fn update(self: *Game) anyerror!void {
         var list = std.ArrayList(*Tile).init(self.allocator);
         defer list.deinit();
         for (self.board, 0..) |_, i| {
             for (self.board[i]) |*tile| {
                 if (self.dead) {
+                    self.stop_timer();
                     if (tile.flag and tile.typ != .bomb) {
                         // std.debug.print("dead, revealing ({d}, {d})\n", .{ tile.idx_pos.x, tile.idx_pos.y });
                         tile.typ = .crossBomb;
                         tile.flag = !tile.flag;
                         tile.update();
                     }
-                    tile.clicked = true;
+
+                    if (tile.typ == .bomb) tile.clicked = true;
                 } else if (self.win) {
                     self.stop_timer();
                     if (tile.typ == .bomb and !tile.flag) {
@@ -200,8 +245,17 @@ const Game = struct {
                     if (left_clicked and !tile.flag) {
                         // std.debug.print("clicked ({d}, {d}), type = {s}, clicked_count = {d}\n", .{ tile.idx_pos.x, tile.idx_pos.y, @tagName(tile.typ), self.clicked_count });
                         if (tile.typ == .bomb) {
-                            tile.explode();
-                            self.dead = true;
+                            if (!self.started) {
+                                self.move_mine(tile);
+                                self.generate_numbers();
+                                if (tile.typ == .clicked) {
+                                    self.expand_from_here(tile);
+                                }
+                                tile.clicked = true;
+                            } else {
+                                tile.explode();
+                                self.dead = true;
+                            }
                         } else if (tile.typ == .clicked and !tile.clicked) {
                             self.expand_from_here(tile);
                         } else if (tile.typ.is_number() and tile.clicked) {
@@ -237,6 +291,16 @@ const Game = struct {
             self.finish_time = std.time.milliTimestamp();
             const time = @as(f64, @floatFromInt(self.finish_time - self.start_time)) / 1000.0;
             std.debug.print("Finish Time: {d}\n", .{time});
+        }
+    }
+
+    pub fn get_timer(self: *Game) i64 {
+        if (self.finish_time != -1) {
+            return self.finish_time - self.start_time;
+        } else if (self.started) {
+            return std.time.milliTimestamp() - self.start_time;
+        } else {
+            return 0;
         }
     }
 
@@ -332,7 +396,7 @@ const Game = struct {
             if (x < 0 or x >= self.board_height or y < 0 or y >= self.board_width) continue;
 
             const next = &self.board[@intCast(x)][@intCast(y)];
-            if ((next.typ == .clicked or next.typ.is_number()) and !next.clicked) {
+            if ((next.typ == .clicked or next.typ.is_number()) and !next.clicked and !next.flag) {
                 self.expand_from_here(next);
             }
         }
@@ -354,7 +418,7 @@ const Tile = struct {
         } else if (self.clicked) {
             TILES.drawRec(self.frameRec, self.pos, .white);
         } else if (self.clicking != .nope) {
-            TILES.drawRec(CLICKED, self.pos, .white);
+            TILES.drawRec(CLICKING, self.pos, .white);
         } else {
             TILES.drawRec(UNCLICKED, self.pos, .white);
         }
@@ -366,9 +430,9 @@ const Tile = struct {
 
     pub fn update_sprite(self: *Tile, typ: TileType) void {
         // std.debug.print("updating sprite of ({d}, {d}) to {s}\n", .{ self.idx_pos.x, self.idx_pos.y, @tagName(self.typ) });
-        const spriteX = (@mod(@as(i32, @intFromEnum(typ)), SPRITE_ROW)) * SPRITE_SZ;
-        const spriteY = @divFloor(@as(i32, @intFromEnum(typ)), SPRITE_ROW) * SPRITE_SZ;
-        self.frameRec = rl.Rectangle.init(@as(f32, @floatFromInt(spriteX)), @as(f32, @floatFromInt(spriteY)), SPRITE_SZ, SPRITE_SZ);
+        const spriteX = (@mod(@as(usize, @intFromEnum(typ)), SPRITE_ROW)) * SPRITE_SZ;
+        const spriteY = @divFloor(@as(usize, @intFromEnum(typ)), SPRITE_ROW) * SPRITE_SZ;
+        self.frameRec = rl.Rectangle.init(@as(f32, @floatFromInt(spriteX)), @as(f32, @floatFromInt(spriteY)), @as(f32, @floatFromInt(SPRITE_SZ)), @as(f32, @floatFromInt(SPRITE_SZ)));
     }
 
     fn explode(self: *Tile) void {
@@ -379,15 +443,79 @@ const Tile = struct {
     }
 
     fn mouse_in_range(self: *Tile, mousePos: rl.Vector2) bool {
-        if (mousePos.x >= self.pos.x and mousePos.x < self.pos.x + SPRITE_SZ and mousePos.y >= self.pos.y and mousePos.y < self.pos.y + SPRITE_SZ) {
+        const sprite_sz = @as(f32, @floatFromInt(SPRITE_SZ));
+        if (!z.isWindowFocused(.{ .any_window = true }) and mousePos.x >= self.pos.x and mousePos.x < self.pos.x + sprite_sz and mousePos.y >= self.pos.y and mousePos.y < self.pos.y + sprite_sz) {
             return true;
         } else return false;
     }
 };
 
-pub fn renderUI() void {
+pub fn showDebugPanel() void {
+    if (z.collapsingHeader("Debug", .{ .default_open = true })) {
+        const mousePos = rl.getMousePosition();
+        z.text("Default Mouse Position: ({d:.3}, {d:.3})", .{ mousePos.x, mousePos.y });
+
+        const virtual_mouse = getMousePosition();
+        z.text("Virtual Mouse Position: ({d:.3}, {d:.3})", .{ virtual_mouse.x, virtual_mouse.y });
+
+        const ui_mouse: [2]f32 = z.getMousePos();
+        z.text("ImGui Mouse Position: ({d:.3}, {d:.3})", .{ ui_mouse[0], ui_mouse[1] });
+        z.text("Is window focus: {}", .{z.isWindowFocused(.{})});
+        z.text("Is any window focus: {}", .{z.isWindowFocused(.{ .any_window = true })});
+        z.text("Font size: {d:.1}", .{z.getFontSize()});
+        z.text("Scale: {d:.3}", .{scale});
+    }
+}
+
+pub fn showCustomWindow() bool {
+    // z.setNextWindowSize(.{ .w = 200, .h = 100 });
+    z.setNextWindowPos(.{ .x = z.getWindowWidth() / 2, .y = z.getWindowHeight() / 2, .cond = .appearing });
+    _ = z.begin("Custom Game", .{ .flags = z.WindowFlags{
+        .no_resize = true,
+        .no_collapse = true,
+        .no_docking = true,
+        .always_auto_resize = true,
+    } });
+    defer z.end();
+    _ = z.inputInt("Width", .{ .v = &customWidth });
+    _ = z.inputInt("Height", .{ .v = &customHeight });
+    _ = z.inputInt("Mines", .{ .v = &customMines });
+    // const windowWidth = z.getWindowWidth();
+    // z.setCursorPosX((windowWidth - 100.0) * 0.5);
+    const confirmed = z.button("Confirm", .{ .h = 30, .w = 100 });
+    z.sameLine(.{});
+    const canceled = z.button("Cancel", .{ .h = 30, .w = 100 });
+    if (canceled or confirmed) {
+        showCustom = false;
+    }
+    return if (confirmed) true else false;
+}
+
+pub fn showThemesWindow() bool {
+    z.setNextWindowPos(.{ .x = z.getWindowWidth() / 2, .y = z.getWindowHeight() / 2, .cond = .appearing });
+    _ = z.begin("Themes", .{ .flags = z.WindowFlags{
+        .always_auto_resize = true,
+        .no_resize = true,
+        .no_docking = true,
+        .no_collapse = true,
+    } });
+    defer z.end();
+    z.text("Warning: confirm will start a new game", .{});
+    _ = z.comboFromEnum("##1", &theme);
+    const confirmed = z.button("Confirm", .{ .h = 30, .w = 100 });
+    z.sameLine(.{});
+    const canceled = z.button("Cancel", .{ .h = 30, .w = 100 });
+    if (canceled or confirmed) {
+        showThemes = false;
+    }
+    return if (confirmed) true else false;
+}
+
+pub fn renderUI(game: *Game, allocator: std.mem.Allocator) anyerror!void {
     c.rlImGuiBegin();
     defer c.rlImGuiEnd();
+    z.pushFont(font);
+    defer z.popFont();
 
     // _ = z.DockSpaceOverViewport(0, z.getMainViewport(), z.DockNodeFlags{});
 
@@ -399,25 +527,84 @@ pub fn renderUI() void {
     const screenWidthf: f32 = @floatFromInt(screenWidth);
     z.setNextWindowPos(.{ .x = screenWidthf * scale, .y = 0 });
     z.setNextWindowSize(.{ .w = widgetPadding, .h = screenHeightf * scale });
-    z.setNextWindowCollapsed(.{ .collapsed = true, .cond = .first_use_ever });
-    _ = z.begin("Debug Mouse", .{});
-    if (z.collapsingHeader("Raylib", .{})) {
-        const mousePos = rl.getMousePosition();
-        z.text("Default Mouse Position: ({d:.3}, {d:.3})", .{ mousePos.x, mousePos.y });
-
-        const virtual_mouse = getMousePosition();
-        z.text("Virtual Mouse Position: ({d:.3}, {d:.3})", .{ virtual_mouse.x, virtual_mouse.y });
-
-        const ui_mouse: [2]f32 = z.getMousePos();
-        z.text("ImGui Mouse Position: ({d:.3}, {d:.3})", .{ ui_mouse[0], ui_mouse[1] });
-        z.text("Scale: {d:.3}", .{scale});
+    _ = z.begin("Menu", .{ .flags = z.WindowFlags{
+        .no_resize = true,
+        .no_move = true,
+        .menu_bar = true,
+        .no_collapse = true,
+    } });
+    if (z.beginMenuBar()) {
+        defer z.endMenuBar();
+        if (z.beginMenu("Game", true)) {
+            defer z.endMenu();
+            if (z.menuItem("New Game", .{ .shortcut = "r" })) {
+                try game.new_game(game.mode, .{ .width = game.board_width, .height = game.board_height, .mines = game.mines });
+            }
+            if (z.menuItem("New Beginner", .{ .shortcut = "1" })) {
+                try game.new_game(.beginner, .{});
+            }
+            if (z.menuItem("New Intermediate", .{ .shortcut = "2" })) {
+                try game.new_game(.intermediate, .{});
+            }
+            if (z.menuItem("New Expert", .{ .shortcut = "3" })) {
+                try game.new_game(.expert, .{});
+            }
+            showCustom = z.menuItem("New Custom", .{ .shortcut = "4" });
+        }
+        if (z.beginMenu("Option", true)) {
+            defer z.endMenu();
+            _ = z.menuItemPtr("Show debug info", .{ .selected = &showDebug });
+            _ = z.menuItemPtr("Themes", .{ .selected = &showThemes, .shortcut = "t" });
+        }
     }
     var cur: i32 = @as(i32, @intFromFloat(scale / 0.25)) - 1;
     if (z.combo("Scaling", .{
         .current_item = &cur,
         .items_separated_by_zeros = "0.25\x000.50\x000.75\x001.00\x001.25\x001.50\x001.75\x002.00\x00",
     })) {
-        scale = @as(f32, @floatFromInt(cur + 1)) * 0.25;
+        const s = @as(f32, @floatFromInt(cur + 1)) * 0.25;
+        scale = s;
+    }
+    z.bullet();
+    const timer = @as(f64, @floatFromInt(game.get_timer())) / 1000.0;
+    z.text("Time: {d:.3}", .{timer});
+
+    if (showCustom) {
+        if (showCustomWindow()) {
+            try game.new_game(.custom, .{ .width = @as(usize, @intCast(customWidth)), .height = @as(usize, @intCast(customHeight)), .mines = @as(usize, @intCast(customMines)) });
+        }
+    }
+    if (showDebug) {
+        showDebugPanel();
+    }
+    if (showThemes) {
+        const changed = showThemesWindow();
+        if (changed) {
+            unloadSprites();
+            switch (theme) {
+                .rtx => {
+                    SPRITE_SZ = 256;
+                    scale = 0.25;
+                    try loadSprites("assets/minesweeper-sprite-rtx-1024.png");
+                },
+                else => {
+                    SPRITE_SZ = 64;
+                    scale = 0.75;
+
+                    // convert enum tag to lowercase string if needed
+                    const theme_str = @tagName(theme); // this gives "light", "dark", etc.
+                    const path = try std.fmt.allocPrintZ(allocator, "assets/minesweeper-sprite-{s}-256.png", .{theme_str});
+                    defer allocator.free(path);
+
+                    try loadSprites(path);
+                },
+            }
+            try game.new_game(game.mode, .{
+                .width = game.board_width,
+                .height = game.board_height,
+                .mines = game.mines,
+            });
+        }
     }
     _ = z.end();
 }
@@ -439,6 +626,23 @@ pub fn scaleScreenSize() [2]i32 {
     return [2]i32{ width, height };
 }
 
+pub fn calculateSpritesPos() void {
+    const sprite_sz = @as(f32, @floatFromInt(SPRITE_SZ));
+    UNCLICKED = rl.Rectangle.init(0, sprite_sz, sprite_sz, sprite_sz);
+    FLAG = rl.Rectangle.init(2 * sprite_sz, 0, sprite_sz, sprite_sz);
+    CLICKED = rl.Rectangle.init(1 * sprite_sz, 1 * sprite_sz, sprite_sz, sprite_sz);
+    CLICKING = rl.Rectangle.init(2 * sprite_sz, 3 * sprite_sz, sprite_sz, sprite_sz);
+}
+
+pub fn loadSprites(path: [:0]const u8) anyerror!void {
+    TILES = try rl.loadTexture(path);
+    calculateSpritesPos();
+}
+
+pub fn unloadSprites() void {
+    rl.unloadTexture(TILES);
+}
+
 pub fn main() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}).init;
     const allocator = gpa.allocator();
@@ -448,7 +652,7 @@ pub fn main() anyerror!void {
         if (deinit_status == .leak) expect(false) catch @panic("TEST FAIL");
     }
     var game = try Game.init(.expert, allocator);
-    try game.new_game(.expert);
+    try game.new_game(.expert, .{});
     defer allocator.destroy(game);
     defer game.deinit();
 
@@ -458,9 +662,11 @@ pub fn main() anyerror!void {
     rl.setConfigFlags(rl.ConfigFlags{ .window_resizable = false, .vsync_hint = true });
     rl.initWindow(screenWidth + widgetPadding, screenHeight, "zigsweeper");
     defer rl.closeWindow(); // Close window and OpenGL context
+    rl.setTraceLogLevel(.err);
 
-    TILES = try rl.loadTexture("assets/tiles.png");
-    defer rl.unloadTexture(TILES);
+    // TILES = try rl.loadTexture("assets/sprite.png");
+    try loadSprites(defaultSpritePath);
+    defer unloadSprites();
 
     rl.setTargetFPS(60); // game to run at 60 frames-per-second
     c.rlImGuiSetup(true);
@@ -468,6 +674,7 @@ pub fn main() anyerror!void {
     defer c.rlImGuiShutdown();
     z.initNoContext(allocator);
     defer z.deinitNoContext();
+    font = z.io.addFontFromFile("fonts/UbuntuMonoNerdFont-Regular.ttf", 20.0);
     //--------------------------------------------------------------------------------------
 
     // Main game loop
@@ -477,20 +684,21 @@ pub fn main() anyerror!void {
         // TODO: Update your variables here
         //----------------------------------------------------------------------------------
 
-        if (rl.isKeyPressed(rl.KeyboardKey.one)) {
-            try game.new_game(.beginner);
-            screenWidth = @intCast(game.board_width * SPRITE_SZ);
-            screenHeight = @intCast(game.board_height * SPRITE_SZ);
-        } else if (rl.isKeyPressed(rl.KeyboardKey.two)) {
-            try game.new_game(.intermediate);
-            screenWidth = @intCast(game.board_width * SPRITE_SZ);
-            screenHeight = @intCast(game.board_height * SPRITE_SZ);
-        } else if (rl.isKeyPressed(rl.KeyboardKey.three)) {
-            try game.new_game(.expert);
-            screenWidth = @intCast(game.board_width * SPRITE_SZ);
-            screenHeight = @intCast(game.board_height * SPRITE_SZ);
-        } else if (rl.isKeyPressed(rl.KeyboardKey.r)) {
-            try game.new_game(game.mode);
+        if (!z.isWindowFocused(.{ .any_window = true })) {
+            if (rl.isKeyPressed(rl.KeyboardKey.one)) {
+                try game.new_game(.beginner, .{});
+            } else if (rl.isKeyPressed(rl.KeyboardKey.two)) {
+                try game.new_game(.intermediate, .{});
+            } else if (rl.isKeyPressed(rl.KeyboardKey.three)) {
+                try game.new_game(.expert, .{});
+            } else if (rl.isKeyPressed(rl.KeyboardKey.four)) {
+                showCustom = true;
+            } else if (rl.isKeyPressed(rl.KeyboardKey.r)) {
+                try game.new_game(game.mode, .{ .width = game.board_width, .height = game.board_height, .mines = game.mines });
+            }
+        }
+        if (z.isKeyPressed(z.Key.t, true)) {
+            showThemes = true;
         }
         const new = scaleScreenSize();
         rl.setWindowSize(new[0] + widgetPadding, new[1]);
@@ -519,6 +727,6 @@ pub fn main() anyerror!void {
         // _ = rg.panel(area, "shit");
         // _ = rg.button(rl.Rectangle.init(100, 100, 64, 64), "0");
         // _ = rg.panel(rl.Rectangle.init(100, 100, 64, 64), "shit");
-        renderUI();
+        try renderUI(game, allocator);
     }
 }
