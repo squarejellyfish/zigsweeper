@@ -25,16 +25,17 @@ const defaultSpritePath = "assets/minesweeper-sprite-dark-256.png";
 var TILES: rl.Texture = undefined;
 // var board: [][]Tile = undefined;
 
-// UI shits
+// UI shits, TODO: turn this into a struct probably
 var showDebug: bool = false;
 var showCustom: bool = false;
-var showPreference: bool = false;
+var enableTimer: bool = true;
+var enableMines: bool = true;
 var theme: Theme = .dark;
 var customWidth: i32 = 8;
 var customHeight: i32 = 8;
 var customMines: i32 = 10;
 var font: z.Font = undefined;
-var preference: PreferenceChanged = PreferenceChanged{};
+var preferenceWindow = PreferenceWindow{};
 
 const TileType = enum {
     bomb,
@@ -59,13 +60,6 @@ const TileType = enum {
 const Theme = enum { rtx, light, dark, green, purple, poop, pacman };
 
 const Mode = enum { beginner, intermediate, expert, custom };
-
-const PreferenceChanged = struct {
-    theme: bool = false,
-    newTheme: Theme = .dark,
-    scale: bool = false,
-    newScale: f32 = 0.75,
-};
 
 const CustomGame = struct {
     width: usize = 8,
@@ -500,75 +494,6 @@ pub fn showCustomWindow() bool {
     return if (confirmed) true else false;
 }
 
-pub fn showPreferenceWindow() PreferenceChanged {
-    z.setNextWindowPos(.{ .x = z.getWindowWidth() / 2, .y = z.getWindowHeight() / 2, .cond = .appearing });
-    z.setNextWindowSize(.{ .w = 600, .h = 0 });
-    _ = z.begin("Preference", .{ .flags = z.WindowFlags{
-        .always_auto_resize = true,
-        .no_resize = true,
-        .no_docking = true,
-        .no_collapse = true,
-    } });
-    defer z.end();
-
-    const tab = struct {
-        var pos: i32 = 1;
-    };
-    const leftHeight = 200;
-    if (z.beginChild("left panel", .{
-        .w = 150,
-        .h = leftHeight,
-        .child_flags = .{ .border = true, .auto_resize_x = true, .auto_resize_y = true, .always_auto_resize = true },
-    })) {
-        defer z.endChild();
-        if (z.selectable("Theme", .{ .selected = tab.pos == 1 })) tab.pos = 1;
-        if (z.selectable("Scale", .{ .selected = tab.pos == 2 })) tab.pos = 2;
-    }
-    z.sameLine(.{});
-
-    const originalTheme = theme;
-    const originalScale = scale;
-    z.beginGroup();
-    _ = z.beginChild("item view", .{ .h = leftHeight - 30, .child_flags = .{
-        .auto_resize_x = true,
-        .auto_resize_y = true,
-        .always_auto_resize = true,
-    } });
-    if (tab.pos == 1) {
-        z.textWrapped("Warning: confirming/applying will start a new game", .{});
-        _ = z.comboFromEnum("##1", &preference.newTheme);
-    }
-    if (tab.pos == 2) {
-        var cur: i32 = @as(i32, @intFromFloat(preference.newScale / 0.25)) - 1;
-        if (z.combo("Scaling", .{
-            .current_item = &cur,
-            .items_separated_by_zeros = "0.25\x000.50\x000.75\x001.00\x001.25\x001.50\x001.75\x002.00\x00",
-        })) {
-            const s = @as(f32, @floatFromInt(cur + 1)) * 0.25;
-            preference.newScale = s;
-        }
-    }
-    z.endChild();
-    const confirmed = z.button("Confirm", .{ .h = 30, .w = 100 });
-    z.sameLine(.{});
-    const canceled = z.button("Cancel", .{ .h = 30, .w = 100 });
-    z.sameLine(.{});
-    const applied = z.button("Apply", .{ .h = 30, .w = 100 });
-    if (canceled or confirmed) {
-        showPreference = false;
-    }
-    z.endGroup();
-
-    // z.text("originalScale: {d}, preference.newScale: {d}", .{ originalScale, preference.newScale });
-    // z.text("originalTheme: {s}, preference.newTheme: {s}", .{ @tagName(originalTheme), @tagName(preference.newTheme) });
-    if (applied or confirmed) {
-        if (preference.newScale != originalScale) preference.scale = true;
-        if (preference.newTheme != originalTheme) preference.theme = true;
-    }
-
-    return preference;
-}
-
 pub fn renderUI(game: *Game, allocator: std.mem.Allocator) anyerror!void {
     c.rlImGuiBegin();
     defer c.rlImGuiEnd();
@@ -608,18 +533,25 @@ pub fn renderUI(game: *Game, allocator: std.mem.Allocator) anyerror!void {
                 try game.new_game(.expert, .{});
             }
             showCustom = z.menuItem("New Custom", .{ .shortcut = "4" });
+            z.separator();
+            _ = z.menuItem("Quit", .{ .shortcut = "esc" });
         }
         if (z.beginMenu("Option", true)) {
             defer z.endMenu();
+            _ = z.menuItemPtr("Preferences", .{ .selected = &preferenceWindow.show, .shortcut = "Ctrl + ," });
             _ = z.menuItemPtr("Show debug info", .{ .selected = &showDebug });
-            _ = z.menuItemPtr("Preferences", .{ .selected = &showPreference, .shortcut = "Ctrl + ," });
         }
     }
-    z.bullet();
-    const timer = @as(f64, @floatFromInt(game.get_timer())) / 1000.0;
-    z.text("Time: {d:.3}", .{timer});
-    z.bullet();
-    z.text("Mines Left: {d}", .{game.mines - game.flag_count});
+
+    if (enableTimer) {
+        z.bullet();
+        const timer = @as(f64, @floatFromInt(game.get_timer())) / 1000.0;
+        z.text("Time: {d:.3}", .{timer});
+    }
+    if (enableMines) {
+        z.bullet();
+        z.text("Mines Left: {d}", .{game.mines - game.flag_count});
+    }
 
     if (showCustom) {
         if (showCustomWindow()) {
@@ -629,40 +561,130 @@ pub fn renderUI(game: *Game, allocator: std.mem.Allocator) anyerror!void {
     if (showDebug) {
         showDebugPanel();
     }
-    if (showPreference) {
-        const changed = showPreferenceWindow();
-        if (changed.scale) {
-            preference.scale = false;
-            scale = changed.newScale;
-        }
-        if (changed.theme) {
-            theme = preference.newTheme;
-            preference.theme = false;
-            unloadSprites();
-            switch (theme) {
-                .rtx => {
-                    SPRITE_SZ = 256;
-                    try loadSprites("assets/minesweeper-sprite-rtx-1024.png");
-                },
-                else => {
-                    SPRITE_SZ = 64;
-
-                    // convert enum tag to lowercase string if needed
-                    const theme_str = @tagName(theme); // this gives "light", "dark", etc.
-                    const path = try std.fmt.allocPrintZ(allocator, "assets/minesweeper-sprite-{s}-256.png", .{theme_str});
-                    defer allocator.free(path);
-
-                    try loadSprites(path);
-                },
-            }
-            try game.new_game(game.mode, .{
-                .width = game.board_width,
-                .height = game.board_height,
-                .mines = game.mines,
-            });
+    if (preferenceWindow.show) {
+        preferenceWindow.showPreferenceWindow();
+        if (preferenceWindow.themeChanged) {
+            try changeTheme(game, allocator);
         }
     }
     _ = z.end();
+}
+
+const PreferenceWindow = struct {
+    show: bool = false,
+    tabPos: i32 = 1,
+    themeChanged: bool = false,
+    style_id: i32 = 0,
+    uiAlpha: f32 = 1.0,
+
+    pub fn showPreferenceWindow(self: *PreferenceWindow) void {
+        z.setNextWindowPos(.{ .x = 100, .y = 50, .cond = .appearing });
+        z.setNextWindowSize(.{ .w = 700, .h = 0 });
+        _ = z.begin("Preference", .{ .flags = z.WindowFlags{
+            .always_auto_resize = true,
+            .no_resize = true,
+            .no_docking = true,
+            .no_collapse = true,
+        } });
+        defer z.end();
+
+        const leftHeight = 500;
+        if (z.beginChild("left panel", .{
+            .w = 150,
+            .h = leftHeight,
+            .child_flags = .{ .border = true, .auto_resize_x = true, .auto_resize_y = true, .always_auto_resize = true },
+        })) {
+            defer z.endChild();
+            if (z.selectable("Appearance", .{ .selected = self.tabPos == 1 })) self.tabPos = 1;
+            if (z.selectable("Tools", .{ .selected = self.tabPos == 2 })) self.tabPos = 2;
+            if (z.selectable("Cheat Mode", .{ .selected = self.tabPos == 3 })) self.tabPos = 3;
+        }
+        z.sameLine(.{});
+
+        z.beginGroup();
+        _ = z.beginChild("item view", .{ .h = leftHeight - 30, .child_flags = .{
+            .auto_resize_x = true,
+            .auto_resize_y = true,
+            .always_auto_resize = true,
+        } });
+        switch (self.tabPos) {
+            1 => {
+                z.separatorText("Game");
+                if (z.comboFromEnum("Theme", &theme)) self.themeChanged = true;
+                z.textColored(.{ 1.0, 0, 0, 1.0 }, "Warning:", .{});
+                z.sameLine(.{});
+                z.text(" changing the theme will start a new game", .{});
+                z.textColored(.{ 1.0, 0, 0, 1.0 }, "Warning:", .{});
+                z.sameLine(.{});
+                z.text(" RTX theme has default scale of 0.25", .{});
+                var cur: i32 = @as(i32, @intFromFloat(scale / 0.25)) - 1;
+                if (z.combo("Game Board Scale", .{
+                    .current_item = &cur,
+                    .items_separated_by_zeros = "0.25\x000.50\x000.75\x001.00\x001.25\x001.50\x001.75\x002.00\x00",
+                })) {
+                    const s = @as(f32, @floatFromInt(cur + 1)) * 0.25;
+                    scale = s;
+                }
+                z.separatorText("UI");
+                var style = z.getStyle();
+                if (z.combo("UI Colors", .{ .current_item = &self.style_id, .items_separated_by_zeros = "Dark\x00Light\x00Classic\x00" })) {
+                    switch (self.style_id) {
+                        0 => style.setColorsDark(),
+                        1 => style.setColorsLight(),
+                        2 => style.setColorsClassic(),
+                        else => unreachable,
+                    }
+                }
+                if (z.sliderFloat("UI Transparency", .{ .v = &self.uiAlpha, .min = 0.1, .max = 1.0, .cfmt = "%.2f" })) {
+                    style.alpha = self.uiAlpha;
+                }
+            },
+            2 => {
+                _ = z.checkbox("Enable Timer", .{ .v = &enableTimer });
+                _ = z.checkbox("Enable Mines Left", .{ .v = &enableMines });
+            },
+            3 => {
+                z.text("Coming Soon!", .{});
+            },
+            else => unreachable,
+        }
+        z.endChild();
+        const closed = z.button("Close", .{ .h = 30, .w = 100 });
+        if (closed) {
+            self.show = false;
+        }
+        z.endGroup();
+
+        // z.text("originalTheme: {s}, preference.newTheme: {s}", .{ @tagName(originalTheme), @tagName(preference.newTheme) });
+    }
+};
+
+pub fn changeTheme(game: *Game, allocator: std.mem.Allocator) anyerror!void {
+    // the global theme is already set by this point
+    preferenceWindow.themeChanged = false;
+    unloadSprites();
+    switch (theme) {
+        .rtx => {
+            SPRITE_SZ = 256;
+            scale = 0.25;
+            try loadSprites("assets/minesweeper-sprite-rtx-1024.png");
+        },
+        else => {
+            SPRITE_SZ = 64;
+
+            // convert enum tag to lowercase string if needed
+            const theme_str = @tagName(theme); // this gives "light", "dark", etc.
+            const path = try std.fmt.allocPrintZ(allocator, "assets/minesweeper-sprite-{s}-256.png", .{theme_str});
+            defer allocator.free(path);
+
+            try loadSprites(path);
+        },
+    }
+    try game.new_game(game.mode, .{
+        .width = game.board_width,
+        .height = game.board_height,
+        .mines = game.mines,
+    });
 }
 
 pub fn getMousePosition() rl.Vector2 {
@@ -754,8 +776,9 @@ pub fn main() anyerror!void {
             }
         }
         if (z.isKeyDown(z.Key.left_ctrl) and z.isKeyDown(z.Key.comma)) {
-            showPreference = true;
+            preferenceWindow.show = true;
         }
+
         const new = scaleScreenSize();
         rl.setWindowSize(new[0] + widgetPadding, new[1]);
         const target: rl.RenderTexture2D = try rl.loadRenderTexture(screenWidth, screenHeight);
