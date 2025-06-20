@@ -20,7 +20,10 @@ var UNCLICKED: rl.Rectangle = undefined;
 var FLAG: rl.Rectangle = undefined;
 var CLICKED: rl.Rectangle = undefined;
 var CLICKING: rl.Rectangle = undefined;
-const defaultSpritePath = "assets/minesweeper-sprite-dark-256.png";
+const defaultSpritePath = "assets/minesweeper-sprite-amongus-256.png";
+var easyMode: bool = false;
+var imortalMode: bool = false;
+var reviveMode: bool = true;
 
 var TILES: rl.Texture = undefined;
 // var board: [][]Tile = undefined;
@@ -30,7 +33,7 @@ var showDebug: bool = false;
 var showCustom: bool = false;
 var enableTimer: bool = true;
 var enableMines: bool = true;
-var theme: Theme = .dark;
+var theme: Theme = .amongus;
 var customWidth: i32 = 8;
 var customHeight: i32 = 8;
 var customMines: i32 = 10;
@@ -57,7 +60,7 @@ const TileType = enum {
     }
 };
 
-const Theme = enum { rtx, light, dark, green, purple, poop, pacman };
+const Theme = enum { rtx, light, dark, green, purple, poop, pacman, amongus, mushroom };
 
 const Mode = enum { beginner, intermediate, expert, custom };
 
@@ -84,6 +87,7 @@ const Game = struct {
     started: bool = false,
     flag_count: usize = 0,
     easy: bool = false,
+    _deadtime: i64 = 0,
 
     // set the fields, allocates the board
     pub fn init(mode: Mode, allocator: std.mem.Allocator) anyerror!*Game {
@@ -161,6 +165,31 @@ const Game = struct {
         screenHeight = @intCast(self.board_height * SPRITE_SZ);
     }
 
+    pub fn revive(self: *Game) void {
+        if (!self.dead) return;
+        self.dead = false;
+        self.finish_time = -1;
+        self.start_time += std.time.milliTimestamp() - self._deadtime;
+        for (self.board) |row| {
+            for (row) |*tile| {
+                if (tile.typ == .bomb) {
+                    tile.clicked = false;
+                } else if (tile.typ == .crossBomb) {
+                    const bomb_count = self.count_neighbor(tile, .bomb);
+                    const cbomb_count = self.count_neighbor(tile, .clickedBomb);
+                    const typ: TileType = @enumFromInt(bomb_count + cbomb_count + 5);
+                    tile.typ = typ;
+                    tile.update();
+                } else if (tile.typ == .clickedBomb) {
+                    tile.typ = .bomb;
+                    tile.flag = true;
+                    tile.clicked = false;
+                    tile.update();
+                }
+            }
+        }
+    }
+
     pub fn generate_mines(self: *Game) anyerror!void {
         var prng = std.Random.DefaultPrng.init(blk: {
             var seed: u64 = undefined;
@@ -230,10 +259,11 @@ const Game = struct {
                 } else {
                     const mouse_pos = getMousePosition();
                     const in_range = tile.mouse_in_range(mouse_pos);
+                    const game_focused = !z.isWindowFocused(.{ .any_window = true });
                     const right_clicked = in_range and rl.isMouseButtonPressed(rl.MouseButton.right);
-                    const left_down = in_range and rl.isMouseButtonDown(rl.MouseButton.left);
+                    const left_down = in_range and rl.isMouseButtonDown(rl.MouseButton.left) and game_focused;
                     // const left_up = rl.isMouseButtonUp(rl.MouseButton.left);
-                    const left_clicked = in_range and rl.isMouseButtonReleased(rl.MouseButton.left);
+                    const left_clicked = in_range and rl.isMouseButtonReleased(rl.MouseButton.left) and game_focused;
 
                     if (tile.typ.is_number() and tile.clicked) {
                         if (left_down) {
@@ -257,8 +287,11 @@ const Game = struct {
                                 }
                                 tile.clicked = true;
                             } else {
-                                tile.explode();
-                                self.dead = true;
+                                if (imortalMode) {
+                                    tile.flag = !tile.flag;
+                                } else {
+                                    self.explodeAndDie(tile);
+                                }
                             }
                         } else if (tile.typ == .clicked and !tile.clicked) {
                             self.expand_from_here(tile);
@@ -322,7 +355,7 @@ const Game = struct {
                 if (tile.flag) self.flag_count += 1;
             }
         }
-        if (!self.started) {
+        if (easyMode and !self.started) {
             self.mark_expand_start();
         }
         if (count == (self.board_height * self.board_width - self.mines)) {
@@ -330,6 +363,16 @@ const Game = struct {
             self.win = true;
         }
         self.clicked_count = count;
+    }
+
+    pub fn explodeAndDie(self: *Game, tile: *Tile) void {
+        tile.explode();
+        self.die();
+    }
+
+    fn die(self: *Game) void {
+        self.dead = true;
+        self._deadtime = std.time.milliTimestamp();
     }
 
     fn count_neighbor(self: *Game, tile: *Tile, target: TileType) i32 {
@@ -385,8 +428,7 @@ const Game = struct {
                     self.expand_from_here(next);
                 } else if (next.typ == .bomb) {
                     if (!next.flag) {
-                        next.explode();
-                        self.dead = true;
+                        self.explodeAndDie(next);
                     }
                 } else next.clicked = true;
             }
@@ -526,7 +568,7 @@ const Tile = struct {
 
     fn mouse_in_range(self: *Tile, mousePos: rl.Vector2) bool {
         const sprite_sz = @as(f32, @floatFromInt(SPRITE_SZ));
-        if (!z.isWindowFocused(.{ .any_window = true }) and mousePos.x >= self.pos.x and mousePos.x < self.pos.x + sprite_sz and mousePos.y >= self.pos.y and mousePos.y < self.pos.y + sprite_sz) {
+        if (mousePos.x >= self.pos.x and mousePos.x < self.pos.x + sprite_sz and mousePos.y >= self.pos.y and mousePos.y < self.pos.y + sprite_sz) {
             return true;
         } else return false;
     }
@@ -535,13 +577,13 @@ const Tile = struct {
 pub fn showDebugPanel() void {
     if (z.collapsingHeader("Debug", .{ .default_open = true })) {
         const mousePos = rl.getMousePosition();
-        z.textWrapped("Default Mouse Position: ({d:.3}, {d:.3})", .{ mousePos.x, mousePos.y });
+        z.textWrapped("Default Mouse Position:\n({d:.3}, {d:.3})", .{ mousePos.x, mousePos.y });
 
         const virtual_mouse = getMousePosition();
-        z.textWrapped("Virtual Mouse Position: ({d:.3}, {d:.3})", .{ virtual_mouse.x, virtual_mouse.y });
+        z.textWrapped("Virtual Mouse Position:\n({d:.3}, {d:.3})", .{ virtual_mouse.x, virtual_mouse.y });
 
         const ui_mouse: [2]f32 = z.getMousePos();
-        z.textWrapped("ImGui Mouse Position: ({d:.3}, {d:.3})", .{ ui_mouse[0], ui_mouse[1] });
+        z.textWrapped("ImGui Mouse Position:\n({d:.3}, {d:.3})", .{ ui_mouse[0], ui_mouse[1] });
         z.text("Is window focus: {}", .{z.isWindowFocused(.{})});
         z.text("Is any window focus: {}", .{z.isWindowFocused(.{ .any_window = true })});
         z.text("Font size: {d:.1}", .{z.getFontSize()});
@@ -569,6 +611,26 @@ pub fn showCustomWindow() bool {
         showCustom = false;
     }
     return if (confirmed) true else false;
+}
+
+pub fn renderGeneral(game: *Game) void {
+    if (enableTimer) {
+        z.bullet();
+        const timer = @as(f64, @floatFromInt(game.get_timer())) / 1000.0;
+        z.text("Time: {d:.3}", .{timer});
+    }
+    if (enableMines) {
+        z.bullet();
+        z.text("Mines Left: {d}", .{game.mines - game.flag_count});
+    }
+    if (easyMode or imortalMode or reviveMode) {
+        z.textColored(.{ 1.0, 0, 0, 1.0 }, "CHEAT MODE ACTIVATED", .{});
+        if (reviveMode) {
+            if (z.button("Revive", .{})) {
+                game.revive();
+            }
+        }
+    }
 }
 
 pub fn renderUI(game: *Game, allocator: std.mem.Allocator) anyerror!void {
@@ -620,15 +682,7 @@ pub fn renderUI(game: *Game, allocator: std.mem.Allocator) anyerror!void {
         }
     }
 
-    if (enableTimer) {
-        z.bullet();
-        const timer = @as(f64, @floatFromInt(game.get_timer())) / 1000.0;
-        z.text("Time: {d:.3}", .{timer});
-    }
-    if (enableMines) {
-        z.bullet();
-        z.text("Mines Left: {d}", .{game.mines - game.flag_count});
-    }
+    renderGeneral(game);
 
     if (showCustom) {
         if (showCustomWindow()) {
@@ -686,42 +740,13 @@ const PreferenceWindow = struct {
         } });
         switch (self.tabPos) {
             1 => {
-                z.separatorText("Game");
-                if (z.comboFromEnum("Theme", &theme)) self.themeChanged = true;
-                z.textColored(.{ 1.0, 0, 0, 1.0 }, "Warning:", .{});
-                z.sameLine(.{});
-                z.text(" changing the theme will start a new game", .{});
-                z.textColored(.{ 1.0, 0, 0, 1.0 }, "Warning:", .{});
-                z.sameLine(.{});
-                z.text(" RTX theme has default scale of 0.25", .{});
-                var cur: i32 = @as(i32, @intFromFloat(scale / 0.25)) - 1;
-                if (z.combo("Game Board Scale", .{
-                    .current_item = &cur,
-                    .items_separated_by_zeros = "0.25\x000.50\x000.75\x001.00\x001.25\x001.50\x001.75\x002.00\x00",
-                })) {
-                    const s = @as(f32, @floatFromInt(cur + 1)) * 0.25;
-                    scale = s;
-                }
-                z.separatorText("UI");
-                var style = z.getStyle();
-                if (z.combo("UI Colors", .{ .current_item = &self.style_id, .items_separated_by_zeros = "Dark\x00Light\x00Classic\x00" })) {
-                    switch (self.style_id) {
-                        0 => style.setColorsDark(),
-                        1 => style.setColorsLight(),
-                        2 => style.setColorsClassic(),
-                        else => unreachable,
-                    }
-                }
-                if (z.sliderFloat("UI Transparency", .{ .v = &self.uiAlpha, .min = 0.1, .max = 1.0, .cfmt = "%.2f" })) {
-                    style.alpha = self.uiAlpha;
-                }
+                self.renderAppearanceTab();
             },
             2 => {
-                _ = z.checkbox("Enable Timer", .{ .v = &enableTimer });
-                _ = z.checkbox("Enable Mines Left", .{ .v = &enableMines });
+                self.renderToolsTab();
             },
             3 => {
-                z.text("Coming Soon!", .{});
+                self.renderCheatTab();
             },
             else => unreachable,
         }
@@ -733,6 +758,52 @@ const PreferenceWindow = struct {
         z.endGroup();
 
         // z.text("originalTheme: {s}, preference.newTheme: {s}", .{ @tagName(originalTheme), @tagName(preference.newTheme) });
+    }
+
+    fn renderAppearanceTab(self: *PreferenceWindow) void {
+        z.separatorText("Game");
+        if (z.comboFromEnum("Theme", &theme)) self.themeChanged = true;
+        z.textColored(.{ 1.0, 0, 0, 1.0 }, "Warning:", .{});
+        z.sameLine(.{});
+        z.text(" changing the theme will start a new game", .{});
+        z.textColored(.{ 1.0, 0, 0, 1.0 }, "Warning:", .{});
+        z.sameLine(.{});
+        z.text(" RTX theme has default scale of 0.25", .{});
+        var cur: i32 = @as(i32, @intFromFloat(scale / 0.25)) - 1;
+        if (z.combo("Game Board Scale", .{
+            .current_item = &cur,
+            .items_separated_by_zeros = "0.25\x000.50\x000.75\x001.00\x001.25\x001.50\x001.75\x002.00\x00",
+        })) {
+            const s = @as(f32, @floatFromInt(cur + 1)) * 0.25;
+            scale = s;
+        }
+        z.separatorText("UI");
+        var style = z.getStyle();
+        if (z.combo("UI Colors", .{ .current_item = &self.style_id, .items_separated_by_zeros = "Dark\x00Light\x00Classic\x00" })) {
+            switch (self.style_id) {
+                0 => style.setColorsDark(),
+                1 => style.setColorsLight(),
+                2 => style.setColorsClassic(),
+                else => unreachable,
+            }
+        }
+        if (z.sliderFloat("UI Transparency", .{ .v = &self.uiAlpha, .min = 0.1, .max = 1.0, .cfmt = "%.2f" })) {
+            style.alpha = self.uiAlpha;
+        }
+    }
+
+    fn renderToolsTab(self: *PreferenceWindow) void {
+        _ = self;
+        _ = z.checkbox("Enable Timer", .{ .v = &enableTimer });
+        _ = z.checkbox("Enable Mines Left", .{ .v = &enableMines });
+    }
+
+    fn renderCheatTab(self: *PreferenceWindow) void {
+        _ = self;
+        z.text("Coming Soon!", .{});
+        _ = z.checkbox("Show best starting tile", .{ .v = &easyMode });
+        _ = z.checkbox("Imortal Mode (you won't die)", .{ .v = &imortalMode });
+        _ = z.checkbox("Revivable", .{ .v = &reviveMode });
     }
 };
 
