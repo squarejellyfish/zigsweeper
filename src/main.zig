@@ -83,6 +83,7 @@ const Game = struct {
     finish_time: i64 = -1,
     started: bool = false,
     flag_count: usize = 0,
+    easy: bool = false,
 
     // set the fields, allocates the board
     pub fn init(mode: Mode, allocator: std.mem.Allocator) anyerror!*Game {
@@ -321,6 +322,9 @@ const Game = struct {
                 if (tile.flag) self.flag_count += 1;
             }
         }
+        if (!self.started) {
+            self.mark_expand_start();
+        }
         if (count == (self.board_height * self.board_width - self.mines)) {
             // std.debug.print("clicked = {d}, won!\n", .{count});
             self.win = true;
@@ -406,6 +410,79 @@ const Game = struct {
             }
         }
     }
+
+    fn mark_expand_start(self: *Game) void {
+        // On easy mode, mark the tile that can expand the most tiles when the game hasn't started
+        const ret: *Tile = self.find_expand_start() catch &self.board[0][0];
+        const tile_pos: rl.Vector2 = rl.Vector2{ .x = ret.pos.x + @as(f32, @floatFromInt(SPRITE_SZ)) / 2, .y = ret.pos.y + @as(f32, @floatFromInt(SPRITE_SZ)) / 2 };
+        // std.debug.print("marking ({d}, {d}) to red\n", .{ tile_pos.x, tile_pos.y });
+        rl.drawCircleV(tile_pos, 10.0, rl.Color.init(200, 100, 100, 255));
+    }
+
+    fn find_expand_start(self: *Game) anyerror!*Tile {
+        var idx_max: usize = 0;
+        var max: usize = 0;
+        var group_of_group: std.ArrayList(std.ArrayList(*Tile)) = std.ArrayList(std.ArrayList(*Tile)).init(self.allocator);
+        defer group_of_group.deinit();
+        defer for (group_of_group.items) |group| {
+            group.deinit();
+        };
+        var visited: [][]bool = try self.allocator.alloc([]bool, self.board_height);
+        for (0..self.board_height) |i| {
+            visited[i] = try self.allocator.alloc(bool, self.board_width);
+        }
+        defer self.allocator.free(visited);
+        defer for (0..self.board_height) |i| {
+            self.allocator.free(visited[i]);
+        };
+        // std.debug.print("searching expand groups...\n", .{});
+        for (self.board, 0..) |row, j| {
+            for (row, 0..) |*tile, i| {
+                if ((tile.typ == .clicked or tile.typ.is_number()) and !visited[j][i]) {
+                    var group = std.ArrayList(*Tile).init(self.allocator);
+                    try self.get_expand_group(tile, &group, &visited);
+                    try group_of_group.append(group);
+                    if (group.items.len > max) {
+                        max = group.items.len;
+                        idx_max = group_of_group.items.len - 1;
+                    }
+                }
+            }
+        }
+        if (group_of_group.items.len == 0) {
+            // this should only happen when the board is full of mines
+            return &self.board[0][0];
+        }
+
+        // TODO: I am not making sure the one is unclicked type
+        var ret = group_of_group.items[idx_max].items[0];
+        for (group_of_group.items[idx_max].items) |tile| {
+            if (tile.typ == .clicked) {
+                ret = tile;
+            }
+        }
+        return ret;
+    }
+
+    fn get_expand_group(self: *Game, tile: *Tile, dst: *std.ArrayList(*Tile), visited: *[][]bool) anyerror!void {
+        // std.debug.print("traversing ({d}, {d}), type = {s}...\n", .{ tile.idx_pos.x, tile.idx_pos.y, @tagName(tile.typ) });
+        try dst.append(tile);
+        visited.*[@as(usize, @intFromFloat(tile.idx_pos.x))][@as(usize, @intFromFloat(tile.idx_pos.y))] = true;
+        if (tile.typ.is_number()) return;
+
+        const direction = [_][2]i8{ [_]i8{ -1, -1 }, [_]i8{ -1, 0 }, [_]i8{ -1, 1 }, [_]i8{ 0, -1 }, [_]i8{ 0, 1 }, [_]i8{ 1, -1 }, [_]i8{ 1, 0 }, [_]i8{ 1, 1 } };
+        for (direction) |dir| {
+            const x = @as(i32, @intFromFloat(tile.idx_pos.x)) + dir[0];
+            const y = @as(i32, @intFromFloat(tile.idx_pos.y)) + dir[1];
+            if (x < 0 or x >= self.board_height or y < 0 or y >= self.board_width) continue;
+            if (visited.*[@as(usize, @intCast(x))][@as(usize, @intCast(y))]) continue;
+
+            const next = &self.board[@intCast(x)][@intCast(y)];
+            if ((next.typ == .clicked or next.typ.is_number())) {
+                try self.get_expand_group(next, dst, visited);
+            }
+        }
+    }
 };
 
 const Tile = struct {
@@ -458,13 +535,13 @@ const Tile = struct {
 pub fn showDebugPanel() void {
     if (z.collapsingHeader("Debug", .{ .default_open = true })) {
         const mousePos = rl.getMousePosition();
-        z.text("Default Mouse Position: ({d:.3}, {d:.3})", .{ mousePos.x, mousePos.y });
+        z.textWrapped("Default Mouse Position: ({d:.3}, {d:.3})", .{ mousePos.x, mousePos.y });
 
         const virtual_mouse = getMousePosition();
-        z.text("Virtual Mouse Position: ({d:.3}, {d:.3})", .{ virtual_mouse.x, virtual_mouse.y });
+        z.textWrapped("Virtual Mouse Position: ({d:.3}, {d:.3})", .{ virtual_mouse.x, virtual_mouse.y });
 
         const ui_mouse: [2]f32 = z.getMousePos();
-        z.text("ImGui Mouse Position: ({d:.3}, {d:.3})", .{ ui_mouse[0], ui_mouse[1] });
+        z.textWrapped("ImGui Mouse Position: ({d:.3}, {d:.3})", .{ ui_mouse[0], ui_mouse[1] });
         z.text("Is window focus: {}", .{z.isWindowFocused(.{})});
         z.text("Is any window focus: {}", .{z.isWindowFocused(.{ .any_window = true })});
         z.text("Font size: {d:.1}", .{z.getFontSize()});
@@ -589,16 +666,16 @@ const PreferenceWindow = struct {
         defer z.end();
 
         const leftHeight = 500;
-        if (z.beginChild("left panel", .{
+        _ = z.beginChild("left panel", .{
             .w = 150,
             .h = leftHeight,
             .child_flags = .{ .border = true, .auto_resize_x = true, .auto_resize_y = true, .always_auto_resize = true },
-        })) {
-            defer z.endChild();
-            if (z.selectable("Appearance", .{ .selected = self.tabPos == 1 })) self.tabPos = 1;
-            if (z.selectable("Tools", .{ .selected = self.tabPos == 2 })) self.tabPos = 2;
-            if (z.selectable("Cheat Mode", .{ .selected = self.tabPos == 3 })) self.tabPos = 3;
-        }
+        });
+        if (z.selectable("Appearance", .{ .selected = self.tabPos == 1 })) self.tabPos = 1;
+        if (z.selectable("Tools", .{ .selected = self.tabPos == 2 })) self.tabPos = 2;
+        if (z.selectable("Cheat Mode", .{ .selected = self.tabPos == 3 })) self.tabPos = 3;
+        z.endChild();
+
         z.sameLine(.{});
 
         z.beginGroup();
