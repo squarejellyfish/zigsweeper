@@ -20,6 +20,7 @@ var UNCLICKED: rl.Rectangle = undefined;
 var FLAG: rl.Rectangle = undefined;
 var CLICKED: rl.Rectangle = undefined;
 var CLICKING: rl.Rectangle = undefined;
+var MINE: rl.Rectangle = undefined;
 const defaultSpritePath = "assets/minesweeper-sprite-amongus-256.png";
 var easyMode: bool = false;
 var imortalMode: bool = false;
@@ -28,9 +29,13 @@ var reviveMode: bool = false;
 var TILES: rl.Texture = undefined;
 // var board: [][]Tile = undefined;
 
-// UI shits, TODO: turn this into a struct probably
+// debug shits
 var showDebug: bool = true;
 var showExpandGroup: bool = false;
+var showMines: bool = false;
+
+// UI shits, TODO: turn this into a struct probably
+
 var showCustom: bool = false;
 var enableTimer: bool = true;
 var enableMines: bool = true;
@@ -595,6 +600,9 @@ const Tile = struct {
             const sprite_sz = @as(f32, @floatFromInt(SPRITE_SZ));
             rl.drawRectangleV(self.pos, .{ .x = sprite_sz, .y = sprite_sz }, self.color);
         }
+        if (showMines and self.typ == .bomb) {
+            TILES.drawRec(MINE, self.pos, .white);
+        }
     }
 
     pub fn update(self: *Tile) void {
@@ -625,6 +633,9 @@ const Tile = struct {
 
 pub fn showDebugPanel(game: *Game) void {
     if (z.collapsingHeader("Debug", .{ .default_open = true })) {
+        _ = z.checkbox("Show mine positions", .{ .v = &showMines });
+        _ = z.checkbox("Show expand groups", .{ .v = &showExpandGroup });
+
         const mousePos = rl.getMousePosition();
         z.textWrapped("Default Mouse Position:\n({d:.3}, {d:.3})", .{ mousePos.x, mousePos.y });
 
@@ -638,7 +649,6 @@ pub fn showDebugPanel(game: *Game) void {
         z.text("Font size: {d:.1}", .{z.getFontSize()});
         z.text("Scale: {d:.3}", .{scale});
         z.text("Board 3BV: {d}", .{game.threeBV});
-        _ = z.checkbox("Show expand groups", .{ .v = &showExpandGroup });
     }
 }
 
@@ -913,6 +923,7 @@ pub fn calculateSpritesPos() void {
     FLAG = rl.Rectangle.init(2 * sprite_sz, 0, sprite_sz, sprite_sz);
     CLICKED = rl.Rectangle.init(1 * sprite_sz, 1 * sprite_sz, sprite_sz, sprite_sz);
     CLICKING = rl.Rectangle.init(2 * sprite_sz, 3 * sprite_sz, sprite_sz, sprite_sz);
+    MINE = rl.Rectangle.init(0, 0, sprite_sz, sprite_sz);
 }
 
 pub fn loadSprites(path: [:0]const u8) anyerror!void {
