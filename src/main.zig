@@ -23,13 +23,14 @@ var CLICKING: rl.Rectangle = undefined;
 const defaultSpritePath = "assets/minesweeper-sprite-amongus-256.png";
 var easyMode: bool = false;
 var imortalMode: bool = false;
-var reviveMode: bool = true;
+var reviveMode: bool = false;
 
 var TILES: rl.Texture = undefined;
 // var board: [][]Tile = undefined;
 
 // UI shits, TODO: turn this into a struct probably
-var showDebug: bool = false;
+var showDebug: bool = true;
+var showExpandGroup: bool = false;
 var showCustom: bool = false;
 var enableTimer: bool = true;
 var enableMines: bool = true;
@@ -88,6 +89,7 @@ const Game = struct {
     flag_count: usize = 0,
     easy: bool = false,
     _deadtime: i64 = 0,
+    threeBV: usize = 0,
 
     // set the fields, allocates the board
     pub fn init(mode: Mode, allocator: std.mem.Allocator) anyerror!*Game {
@@ -161,6 +163,7 @@ const Game = struct {
         try self.generate_mines();
 
         self.generate_numbers();
+        try self.calc_board_3bv();
         screenWidth = @intCast(self.board_width * SPRITE_SZ);
         screenHeight = @intCast(self.board_height * SPRITE_SZ);
     }
@@ -282,6 +285,7 @@ const Game = struct {
                             if (!self.started) {
                                 self.move_mine(tile);
                                 self.generate_numbers();
+                                try self.calc_board_3bv();
                                 if (tile.typ == .clicked) {
                                     self.expand_from_here(tile);
                                 }
@@ -326,8 +330,6 @@ const Game = struct {
     fn stop_timer(self: *Game) void {
         if (self.finish_time == -1) {
             self.finish_time = std.time.milliTimestamp();
-            const time = @as(f64, @floatFromInt(self.finish_time - self.start_time)) / 1000.0;
-            std.debug.print("Finish Time: {d}\n", .{time});
         }
     }
 
@@ -469,26 +471,11 @@ const Game = struct {
         defer for (group_of_group.items) |group| {
             group.deinit();
         };
-        var visited: [][]bool = try self.allocator.alloc([]bool, self.board_height);
-        for (0..self.board_height) |i| {
-            visited[i] = try self.allocator.alloc(bool, self.board_width);
-        }
-        defer self.allocator.free(visited);
-        defer for (0..self.board_height) |i| {
-            self.allocator.free(visited[i]);
-        };
-        // std.debug.print("searching expand groups...\n", .{});
-        for (self.board, 0..) |row, j| {
-            for (row, 0..) |*tile, i| {
-                if ((tile.typ == .clicked or tile.typ.is_number()) and !visited[j][i]) {
-                    var group = std.ArrayList(*Tile).init(self.allocator);
-                    try self.get_expand_group(tile, &group, &visited);
-                    try group_of_group.append(group);
-                    if (group.items.len > max) {
-                        max = group.items.len;
-                        idx_max = group_of_group.items.len - 1;
-                    }
-                }
+        try self.get_all_expand_groups(&group_of_group);
+        for (group_of_group.items, 0..) |group, i| {
+            if (group.items.len > max) {
+                max = group.items.len;
+                idx_max = i;
             }
         }
         if (group_of_group.items.len == 0) {
@@ -525,6 +512,62 @@ const Game = struct {
             }
         }
     }
+
+    pub fn calc_board_3bv(self: *Game) anyerror!void {
+        for (self.board) |row| {
+            for (row) |*tile| {
+                tile.color = rl.Color{ .r = 0, .g = 0, .b = 0, .a = 0 };
+            }
+        }
+        var group_of_group: std.ArrayList(std.ArrayList(*Tile)) = std.ArrayList(std.ArrayList(*Tile)).init(self.allocator);
+        defer group_of_group.deinit();
+        defer for (group_of_group.items) |group| {
+            group.deinit();
+        };
+        try self.get_all_expand_groups(&group_of_group);
+        self.color_code_expand_groups(&group_of_group);
+        self.threeBV = self.board_height * self.board_width;
+        for (group_of_group.items) |group| {
+            self.threeBV -= group.items.len;
+            self.threeBV += 1;
+        }
+        self.threeBV -= self.mines;
+    }
+
+    fn color_code_expand_groups(self: *Game, groups: *std.ArrayList(std.ArrayList(*Tile))) void {
+        // color code each group with random color for debug purposes
+        for (groups.items) |group| {
+            const r = @as(u8, @intCast(rl.getRandomValue(0, 255)));
+            const g = @as(u8, @intCast(rl.getRandomValue(0, 255)));
+            const b = @as(u8, @intCast(rl.getRandomValue(0, 255)));
+            const color: rl.Color = rl.Color.init(r, g, b, 100);
+            for (group.items) |tile| {
+                tile.color = color;
+            }
+        }
+        _ = self;
+    }
+
+    pub fn get_all_expand_groups(self: *Game, dst: *std.ArrayList(std.ArrayList(*Tile))) anyerror!void {
+        var visited: [][]bool = try self.allocator.alloc([]bool, self.board_height);
+        for (0..self.board_height) |i| {
+            visited[i] = try self.allocator.alloc(bool, self.board_width);
+        }
+        defer self.allocator.free(visited);
+        defer for (0..self.board_height) |i| {
+            self.allocator.free(visited[i]);
+        };
+        // std.debug.print("searching expand groups...\n", .{});
+        for (self.board, 0..) |row, j| {
+            for (row, 0..) |*tile, i| {
+                if ((tile.typ == .clicked) and !visited[j][i]) {
+                    var group = std.ArrayList(*Tile).init(self.allocator);
+                    try self.get_expand_group(tile, &group, &visited);
+                    try dst.append(group);
+                }
+            }
+        }
+    }
 };
 
 const Tile = struct {
@@ -535,6 +578,7 @@ const Tile = struct {
     clicked: bool = false,
     clicking: ClickingType = .nope,
     flag: bool = false,
+    color: rl.Color = undefined,
 
     pub fn show(self: *Tile) void {
         if (self.flag) {
@@ -545,6 +589,11 @@ const Tile = struct {
             TILES.drawRec(CLICKING, self.pos, .white);
         } else {
             TILES.drawRec(UNCLICKED, self.pos, .white);
+        }
+
+        if (showExpandGroup) {
+            const sprite_sz = @as(f32, @floatFromInt(SPRITE_SZ));
+            rl.drawRectangleV(self.pos, .{ .x = sprite_sz, .y = sprite_sz }, self.color);
         }
     }
 
@@ -574,7 +623,7 @@ const Tile = struct {
     }
 };
 
-pub fn showDebugPanel() void {
+pub fn showDebugPanel(game: *Game) void {
     if (z.collapsingHeader("Debug", .{ .default_open = true })) {
         const mousePos = rl.getMousePosition();
         z.textWrapped("Default Mouse Position:\n({d:.3}, {d:.3})", .{ mousePos.x, mousePos.y });
@@ -588,6 +637,8 @@ pub fn showDebugPanel() void {
         z.text("Is any window focus: {}", .{z.isWindowFocused(.{ .any_window = true })});
         z.text("Font size: {d:.1}", .{z.getFontSize()});
         z.text("Scale: {d:.3}", .{scale});
+        z.text("Board 3BV: {d}", .{game.threeBV});
+        _ = z.checkbox("Show expand groups", .{ .v = &showExpandGroup });
     }
 }
 
@@ -622,6 +673,10 @@ pub fn renderGeneral(game: *Game) void {
     if (enableMines) {
         z.bullet();
         z.text("Mines Left: {d}", .{game.mines - game.flag_count});
+    }
+    if (game.finish_time != -1) {
+        z.bullet();
+        z.text("Board 3BV: {d}", .{game.threeBV});
     }
     if (easyMode or imortalMode or reviveMode) {
         z.textColored(.{ 1.0, 0, 0, 1.0 }, "CHEAT MODE ACTIVATED", .{});
@@ -690,7 +745,7 @@ pub fn renderUI(game: *Game, allocator: std.mem.Allocator) anyerror!void {
         }
     }
     if (showDebug) {
-        showDebugPanel();
+        showDebugPanel(game);
     }
     if (preferenceWindow.show) {
         preferenceWindow.showPreferenceWindow();
