@@ -1,3 +1,6 @@
 .zig-cache/
 zig-out/
 *.o
+
+.DS_Store
+imgui.ini

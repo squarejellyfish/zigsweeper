@@ -35,17 +35,15 @@
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
-    .dependencies = .{
-        .raylib_zig = .{
-            .url = "git+https://github.com/Not-Nik/raylib-zig?ref=devel#3bf08a304cfe2baf839705063ff999b8d8bc8c54",
-            .hash = "raylib_zig-5.6.0-dev-KE8REKAqBQAQugfCOjYYVRFOi7iaEJK1EMDcRUq8AOm2",
+    .dependencies = .{ .raylib_zig = .{
+        .url = "git+https://github.com/Not-Nik/raylib-zig?ref=devel#3bf08a304cfe2baf839705063ff999b8d8bc8c54",
+        .hash = "raylib_zig-5.6.0-dev-KE8REKAqBQAQugfCOjYYVRFOi7iaEJK1EMDcRUq8AOm2",
+    }, .rlimgui = .{
+        .path = "include/rlimgui",
+    }, .zgui = .{
+            .url = "git+https://github.com/zig-gamedev/zgui.git#21dcc288ac5ee70b1fca789d53a06d5c49d51e5e",
+            .hash = "zgui-0.6.0-dev--L6sZKTBaADLHp09LtUUifdfFpsczwbnyH7r2ajfVPuJ",
         },
-        .zgui = .{
-            .path = "include/zgui",
-        },
-        .rlimgui = .{
-            .path = "include/rlimgui",
-        }
     },
     .paths = .{
         "build.zig",

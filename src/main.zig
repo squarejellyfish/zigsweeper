@@ -1,5 +1,4 @@
 const rl = @import("raylib");
-const rg = @import("raygui");
 const std = @import("std");
 const expect = std.testing.expect;
 
@@ -30,7 +29,7 @@ var TILES: rl.Texture = undefined;
 // var board: [][]Tile = undefined;
 
 // debug shits
-var showDebug: bool = true;
+var showDebug: bool = false;
 var showExpandGroup: bool = false;
 var showMines: bool = false;
 
