@@ -49,8 +49,11 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "include",
+        "assets",
+        "fonts",
+        "README.md",
+        "LICENSE",
         // For example...
-        //"LICENSE",
-        //"README.md",
     },
 }
